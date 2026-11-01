@@ -1,0 +1,82 @@
+# Agent Capability & Rung Mapping Configuration
+
+profiles:
+  openrouter-first:
+    blocked_providers: []
+    rungs:
+      0:
+        purpose: "fast / mechanical / mini-code"
+        preferred: "claude-or:nemotron_super"
+        fallbacks: ["pi-code", "claude-local", "codex", "claude"]
+      1:
+        purpose: "standard implementation / unit tests / code"
+        preferred: "claude-or:nemotron_ultra"
+        fallbacks: ["claude-or:nemotron_super", "codex", "claude", "agy"]
+      2:
+        purpose: "complex dynamics / algorithms / strong"
+        preferred: "claude-or:nemotron_ultra"
+        fallbacks: ["claude", "codex", "agy"]
+      3:
+        purpose: "expert / architecture / security review"
+        preferred: "claude"
+        fallbacks: ["codex", "agy", "claude-or:nemotron_ultra"]
+
+  sensitive:
+    blocked_providers: ["claude-or", "pi-fw", "openrouter"]
+    rungs:
+      0:
+        purpose: "fast / mechanical / mini-code"
+        preferred: "claude-local"
+        fallbacks: ["pi-code", "codex", "claude"]
+      1:
+        purpose: "standard implementation / unit tests / code"
+        preferred: "codex"
+        fallbacks: ["claude", "agy", "claude-local"]
+      2:
+        purpose: "complex dynamics / algorithms / strong"
+        preferred: "claude"
+        fallbacks: ["codex", "agy"]
+      3:
+        purpose: "expert / architecture / security review"
+        preferred: "claude"
+        fallbacks: ["codex", "agy"]
+
+  balanced:
+    blocked_providers: []
+    rungs:
+      0:
+        purpose: "fast / mechanical / mini-code"
+        preferred: "claude-local"
+        fallbacks: ["codex", "claude-or:nemotron_super", "pi-code"]
+      1:
+        purpose: "standard implementation / unit tests / code"
+        preferred: "codex"
+        fallbacks: ["claude", "claude-or:nemotron_ultra", "agy"]
+      2:
+        purpose: "complex dynamics / algorithms / strong"
+        preferred: "claude"
+        fallbacks: ["codex", "agy"]
+      3:
+        purpose: "expert / architecture / security review"
+        preferred: "claude"
+        fallbacks: ["codex", "agy"]
+
+  local-only:
+    blocked_providers: ["claude", "claude-or", "codex", "agy", "pi-fw"]
+    rungs:
+      0:
+        purpose: "fast / mechanical / mini-code"
+        preferred: "pi-code"
+        fallbacks: ["claude-local"]
+      1:
+        purpose: "standard implementation / unit tests / code"
+        preferred: "claude-local"
+        fallbacks: ["pi-code"]
+      2:
+        purpose: "complex dynamics / algorithms / strong"
+        preferred: "claude-local"
+        fallbacks: ["pi-code"]
+      3:
+        purpose: "expert / architecture / security review"
+        preferred: "claude-local"
+        fallbacks: ["pi-code"]

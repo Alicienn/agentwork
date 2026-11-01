@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# OPTIONAL per-project worktree preparation, run by launch.sh inside each fresh
+# worktree (on the host, where network is available) BEFORE the sandboxed agent
+# starts — so the agent can run tests/builds offline.
+#
+# To enable: copy this file to `prepare-worktree.sh` in the same directory,
+# edit it for your stack, and `chmod +x prepare-worktree.sh`.
+# If `prepare-worktree.sh` is absent, launch.sh simply skips this step.
+#
+# The working directory is the worktree root when this runs.
+set -euo pipefail
+
+# --- Python (uv) example -----------------------------------------------------
+# uv venv .venv -q
+# uv pip install -q -p .venv/bin/python -e . pytest
+
+# --- Node example ------------------------------------------------------------
+# npm ci --silent    # or: pnpm install --frozen-lockfile
+
+# --- Go example --------------------------------------------------------------
+# go mod download
+
+echo "prepare-worktree: nothing to do (edit me for your stack)"

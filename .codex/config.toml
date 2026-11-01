@@ -1,0 +1,3 @@
+# Project-level OpenAI Codex CLI configuration
+approval_policy = "never"
+sandbox_mode = "danger-full-access"

@@ -1,0 +1,10 @@
+# Agent scratch files
+.ai/scratch/
+
+# Parallel-agents harness: raw prompts + transcripts + runtime mirror (never commit or publish)
+agentwork/logs/
+agentwork/state/STATUS_MIRROR.json
+.agentwork-state/
+__pycache__/
+*.py[cod]
+.DS_Store

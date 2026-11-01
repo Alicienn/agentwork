@@ -1,0 +1,38 @@
+# Project Configuration
+project:
+  name: "<PROJECT>"
+  version: "0.1.0"
+  repo_id: ""  # Set by setup.sh to a UUID if empty
+
+  # Routing profile (required, set at setup.sh time):
+  #   openrouter-first : Heavily uses claude-or (free OpenRouter models) + local models;
+  #                      falls back to paid claude/codex/agy on repeated failure.
+  #   sensitive        : HARD-BLOCKS claude-or and third-party routers.
+  #                      Only approved_destinations and local Ollama allowed.
+  #   balanced         : Multi-vendor subscription CLIs + local models.
+  #   local-only       : Airgapped local Ollama only.
+  routing_profile: "<REQUIRED>"
+
+  # Isolation mode: worktree-seatbelt (default on macOS/bwrap) | worktree-only
+  isolation_mode: "worktree-seatbelt"
+
+  # Driver preferences: auto | claude | claude-or | codex | agy | gemini | claude-local | pi-code
+  default_driver: "auto"
+
+  # Retry and escalation budget
+  max_retries_per_rung: 2
+  max_total_attempts_per_wp: 6
+  global_timeout_seconds: 14400  # 4 hours max per overall run
+  worker_timeout_seconds: 1800   # 30 mins max per single worker attempt
+  gate_timeout_seconds: 300      # 5 mins max per gate check
+
+protected_files:
+  - "docs/design/DESIGN.md"
+  - "agentwork/state/DECISIONS.md"
+  - "agentwork/config/project.yaml"
+  - "agentwork/config/agents.yaml"
+  - "agentwork/config/harness-manifest.json"
+
+verification:
+  test_command: ""
+  lint_command: ""
