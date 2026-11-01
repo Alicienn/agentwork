@@ -985,6 +985,14 @@ def is_agent_installed(agent_spec: str) -> bool:
     if agent_spec == "fake":
         return True
     base = agent_spec.split(":")[0]
+    if base == "claude-or":
+        return shutil.which("claude-or") is not None or (
+            shutil.which("claude") is not None and bool(os.environ.get("OPENROUTER_API_KEY"))
+        )
+    if base == "claude-local":
+        return shutil.which("claude-local") is not None or (
+            shutil.which("claude") is not None and shutil.which("ollama") is not None
+        )
     bin_map = {
         "pi-code": "pi",
         "pi-devstral": "pi",
