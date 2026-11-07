@@ -958,10 +958,12 @@ def cmd_unblock(args):
     if getattr(args, "all", False) or tid == "ALL":
         state["blocked"] = []
         state["running"] = []
+        state["attempts"] = {}
         for q in state.get("questions", {}).values():
             q["status"] = "RESOLVED"
         save_state(state)
-        print("Cleared all blocked and stale running tasks.")
+        journal_event("unblock", {"task_id": "ALL"})
+        print("Cleared all blocked and stale running tasks and reset attempt counters.")
         return
 
     if not tid:
