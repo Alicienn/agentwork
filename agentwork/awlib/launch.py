@@ -30,7 +30,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from . import config as awconfig
 from .gate import run_gate
-from .oscompat import IS_LINUX, IS_MACOS, IS_WINDOWS, WINDOWS_CMDLINE_LIMIT, ProcessTree
+from .oscompat import IS_LINUX, IS_MACOS, IS_WINDOWS, WINDOWS_CMDLINE_LIMIT, ProcessTree, user_state_root
 from .specs import find_task_spec, tier_of
 
 DEGRADED_BANNER = """
@@ -302,19 +302,28 @@ def wrap_in_sandbox(sb: str, cmd: List[str], wt: Path, common_git: Path, wp_id: 
     real_wt = wt.resolve()
     real_git = common_git.resolve()
     home = Path.home()
+    # The main checkout (parent of the common .git dir) and the harness state must stay
+    # read-only even when they live under a writable temp dir such as /tmp.
+    main_repo = real_git.parent
+    state_root = user_state_root()
     if sb == "seatbelt":
         branch_lower = wp_id.lower()
+        # Seatbelt: the last matching rule wins, so the order below matters.
         profile = f"""(version 1)
 (allow default)
 (deny file-write*)
+(allow file-write*
+  (subpath "/private/tmp")
+  (literal "/dev/null")
+  (regex #"^/dev/tty"))
+(deny file-write*
+  (subpath "{main_repo}")
+  (subpath "{state_root.resolve() if state_root.exists() else state_root}"))
 (allow file-write*
   (subpath "{real_wt}")
   (subpath "{real_git}/worktrees/{wp_id}")
   (subpath "{real_git}/objects")
   (subpath "{attempt_dir.resolve()}")
-  (subpath "/private/tmp")
-  (literal "/dev/null")
-  (regex #"^/dev/tty")
   (regex #"^{real_git}/(logs/)?refs/heads/wp/{branch_lower}(\\.lock)?$"))
 (deny file-read*
   (subpath "{home}/.ssh")
@@ -325,14 +334,18 @@ def wrap_in_sandbox(sb: str, cmd: List[str], wt: Path, common_git: Path, wp_id: 
     if sb == "bwrap":
         for sub in (f"worktrees/{wp_id}", "objects", "refs/heads/wp", "logs/refs/heads/wp"):
             (real_git / sub).mkdir(parents=True, exist_ok=True)
+        # bwrap applies mounts in order: later binds win over earlier ones.
         args = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
-                "--bind", str(real_wt), str(real_wt),
-                "--bind", str(real_git / "worktrees" / wp_id), str(real_git / "worktrees" / wp_id),
-                "--bind", str(real_git / "objects"), str(real_git / "objects"),
-                "--bind", str(real_git / "refs/heads/wp"), str(real_git / "refs/heads/wp"),
-                "--bind", str(real_git / "logs/refs/heads/wp"), str(real_git / "logs/refs/heads/wp"),
-                "--bind", str(attempt_dir.resolve()), str(attempt_dir.resolve()),
-                "--bind", "/tmp", "/tmp"]
+                "--bind", "/tmp", "/tmp",
+                "--ro-bind", str(main_repo), str(main_repo)]
+        if state_root.exists():
+            args += ["--ro-bind", str(state_root.resolve()), str(state_root.resolve())]
+        args += ["--bind", str(real_wt), str(real_wt),
+                 "--bind", str(real_git / "worktrees" / wp_id), str(real_git / "worktrees" / wp_id),
+                 "--bind", str(real_git / "objects"), str(real_git / "objects"),
+                 "--bind", str(real_git / "refs/heads/wp"), str(real_git / "refs/heads/wp"),
+                 "--bind", str(real_git / "logs/refs/heads/wp"), str(real_git / "logs/refs/heads/wp"),
+                 "--bind", str(attempt_dir.resolve()), str(attempt_dir.resolve())]
         for secret in (".ssh", ".aws", ".config/gh", ".local/state/agentwork"):
             if (home / secret).exists():
                 args += ["--tmpfs", str(home / secret)]

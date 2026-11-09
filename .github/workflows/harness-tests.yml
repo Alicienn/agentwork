@@ -18,15 +18,15 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python: ["3.12"]
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04   # Python 3.9 builds are not published for newer Ubuntu images
             python: "3.9"
     env:
       CARGO_TERM_COLOR: never
       PYTHONIOENCODING: utf-8
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
 
@@ -74,8 +74,8 @@ jobs:
     env:
       CARGO_TERM_COLOR: never
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable

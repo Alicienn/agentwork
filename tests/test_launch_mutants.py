@@ -57,6 +57,11 @@ def test_sandbox_wrappers(tmp_path):
     bw = launch.wrap_in_sandbox("bwrap", ["agent"], wt, git_dir, "WP01", att)
     assert bw[:3] == ["bwrap", "--ro-bind", "/"] and bw[-1] == "agent"
     assert str(wt.resolve()) in bw and "--chdir" in bw
+    # main checkout re-mounted read-only AFTER the writable /tmp, BEFORE the worktree binds
+    i_tmp, i_repo, i_wt = bw.index("/tmp"), bw.index(str(git_dir.resolve().parent)), bw.index(str(wt.resolve()))
+    assert bw[i_repo - 1] == "--ro-bind" and i_tmp < i_repo < i_wt
+    prof = sb[2]
+    assert prof.index('(subpath "/private/tmp")') < prof.index(f'(subpath "{git_dir.resolve().parent}")')         < prof.index(f'(subpath "{wt.resolve()}")')
     assert launch.wrap_in_sandbox(None, ["agent"], wt, git_dir, "WP01", att) == ["agent"]
 
 
