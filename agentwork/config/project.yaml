@@ -2,9 +2,9 @@
 project:
   name: "<PROJECT>"
   version: "0.1.0"
-  repo_id: ""  # Set by setup.sh to a UUID if empty
+  repo_id: ""  # Set by setup to a UUID if empty
 
-  # Routing profile (required, set at setup.sh time):
+  # Routing profile (required, set at setup time):
   #   openrouter-first : Heavily uses claude-or (free OpenRouter models) + local models;
   #                      falls back to paid claude/codex/agy on repeated failure.
   #   sensitive        : HARD-BLOCKS claude-or and third-party routers.
@@ -13,8 +13,14 @@ project:
   #   local-only       : Airgapped local Ollama only.
   routing_profile: "<REQUIRED>"
 
-  # Isolation mode: worktree-seatbelt (default on macOS/bwrap) | worktree-only
-  isolation_mode: "worktree-seatbelt"
+  # Isolation mode:
+  #   auto              : best sandbox on THIS machine — Seatbelt (macOS) or bubblewrap (Linux);
+  #                       on Windows (no OS sandbox) falls back to worktree-only with a loud warning.
+  #   worktree-seatbelt : require Seatbelt/bwrap; refuse to start an agent without one.
+  #   worktree-only     : no OS sandbox; git worktree + mechanical gate only.
+  isolation_mode: "auto"
+  # Also turn on Claude Code's own sandbox for claude* agents (macOS / Linux / WSL2; no effect on native Windows).
+  claude_sandbox: false
 
   # Driver preferences: auto | claude | claude-or | codex | agy | gemini | claude-local | pi-code
   default_driver: "auto"
@@ -24,7 +30,7 @@ project:
   max_total_attempts_per_wp: 6
   global_timeout_seconds: 14400  # 4 hours max per overall run
   worker_timeout_seconds: 1800   # 30 mins max per single worker attempt
-  gate_timeout_seconds: 300      # 5 mins max per gate check
+  gate_timeout_seconds: 300      # 5 mins max per gate check (raise it for big Rust builds)
 
 protected_files:
   - "docs/design/DESIGN.md"
@@ -33,6 +39,61 @@ protected_files:
   - "agentwork/config/agents.yaml"
   - "agentwork/config/harness-manifest.json"
 
+# Languages whose anti-cheat checks and default commands are active.
+#   auto            : detect (Cargo.toml -> rust, pyproject.toml/setup.py/requirements.txt -> python)
+#   [python, rust]  : explicit list (remove one to switch it off)
+languages: auto
+
 verification:
+  # When set, these replace the per-language defaults below in the FINAL gate.
   test_command: ""
   lint_command: ""
+  # Shell for Verify:/done_when/test commands: auto (bash or sh on POSIX, cmd on Windows) | bash | sh | cmd | powershell | pwsh
+  shell: "auto"
+  # Also run the project lint/test commands in every work-package gate (not only FINAL).
+  run_project_checks_per_task: false
+  # Fail the gate when a test that existed at the base commit disappears (deleted or renamed).
+  forbid_test_removal: true
+
+python:
+  test_command: ""     # e.g. "python -m pytest -q"
+  lint_command: ""     # e.g. "ruff check ."
+
+rust:
+  test_command: ""     # empty = "cargo nextest run" if cargo-nextest is installed, else "cargo test"
+  fmt_command: "cargo fmt --all -- --check"
+  clippy_command: "cargo clippy --all-targets -- -D warnings"
+  # Anti-cheat analyzer: auto (syn helper, falls back to builtin) | syn | builtin
+  checker: "auto"
+  # Fail on new #![allow(...)] / #![expect(...)] or blanket #[allow(warnings|clippy::all|...)]
+  forbid_new_crate_allows: true
+  # Extra function/macro names that count as assertions in a #[test] (e.g. helpers that assert).
+  extra_assertion_names: []
+  # Files an agent may change only when they are listed LITERALLY in its owns: (no globs).
+  guarded_files:
+    - "Cargo.toml"
+    - "**/Cargo.toml"
+    - "Cargo.lock"
+    - "**/Cargo.lock"
+    - "build.rs"
+    - "**/build.rs"
+    - "clippy.toml"
+    - ".clippy.toml"
+    - "**/clippy.toml"
+    - "**/.clippy.toml"
+    - "rustfmt.toml"
+    - ".rustfmt.toml"
+    - "**/rustfmt.toml"
+    - "**/.rustfmt.toml"
+    - "rust-toolchain"
+    - "rust-toolchain.toml"
+    - ".cargo/**"
+    - "**/.cargo/**"
+    - "deny.toml"
+  # Optional mutation testing of each work package's diff with cargo-mutants.
+  mutants:
+    enabled: false
+    min_kill_ratio: 0.8          # fraction of viable mutants the tests must catch
+    count_timeouts_as_caught: true
+    timeout_seconds: 3600
+    extra_args: ""               # e.g. "-j 4"

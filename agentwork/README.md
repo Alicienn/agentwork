@@ -18,8 +18,12 @@ agentwork/
   CONTEXT.md                  shared brief, prepended to every WP prompt
   packages/WP<NN>-*.md        one spec per unit of work (WP-template.md = skeleton)
   CONTEXT-lite.md             shorter brief, given to Tier: mini-code packages
-  scripts/launch.sh           launch <WP> <agent> [--dry-run] [--stream|--no-stream]
-  scripts/split.sh            split an oversized WP into Tier: mini-code children
+  pipeline.py                 all logic: run/drive/merge/seal + gate, launch, split, driver, setup
+  awlib/                      portable Python modules behind pipeline.py (no dependencies)
+  tools/rust-testcheck/       syn-based Rust test checker used by the gate
+  scripts/launch.sh|.cmd      launch <WP> <agent> [--dry-run]   (= pipeline.py launch)
+  scripts/split.sh|.cmd       split an oversized WP into Tier: mini-code children (= pipeline.py split)
+  scripts/verify_gate.sh|.cmd mechanical gate (= pipeline.py gate)
   scripts/prepare-worktree.sh optional per-project env pre-seed (see .example)
   reports/wp<nn>.md           each worker writes its result here
   logs/                       prompts + transcripts (gitignored)
@@ -42,6 +46,9 @@ wait
 # 4. Review each worktree's diff, run the checks the sandbox couldn't,
 #    then merge (the orchestrator merges — workers never push).
 ```
+
+On Windows use `agentwork\scripts\launch.cmd WP01 codex` (or `py -3 agentwork\pipeline.py launch WP01 codex`)
+in separate terminals. Windows has no OS sandbox: see the root README, "Windows: degraded isolation".
 
 Preview an assembled prompt without running anything:
 `agentwork/scripts/launch.sh WP01 claude --dry-run`.

@@ -1,0 +1,4 @@
+# agentwork: launchers must keep their native line endings on every OS
+*.sh text eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf

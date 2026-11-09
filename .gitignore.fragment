@@ -8,3 +8,4 @@ agentwork/state/STATUS_MIRROR.json
 __pycache__/
 *.py[cod]
 .DS_Store
+target/

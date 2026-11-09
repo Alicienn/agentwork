@@ -11,7 +11,6 @@ import json
 import re
 import time
 import glob
-import fcntl
 import signal
 import shutil
 import hashlib
@@ -20,6 +19,13 @@ import tempfile
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple, Set
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from awlib import config as awconfig  # noqa: E402
+from awlib import oscompat  # noqa: E402
+from awlib import rustsrc  # noqa: E402
+from awlib.oscompat import FileLock, LockBusy, stable_file_bytes  # noqa: E402
+from awlib.specs import parse_frontmatter  # noqa: E402,F401  (re-exported for compatibility)
 
 # Ignore SIGPIPE so closing TUI or piping output never crashes the controller mid-commit
 if hasattr(signal, "SIGPIPE"):
@@ -33,6 +39,9 @@ SCRIPTS_DIR = REPO_ROOT / "agentwork" / "scripts"
 PROJECT_CONFIG = CONFIG_DIR / "project.yaml"
 AGENTS_CONFIG = CONFIG_DIR / "agents.yaml"
 MANIFEST_FILE = CONFIG_DIR / "harness-manifest.json"
+AWLIB_DIR = REPO_ROOT / "agentwork" / "awlib"
+TOOLS_DIR = REPO_ROOT / "agentwork" / "tools"
+PIPELINE = Path(__file__).resolve()
 DESIGN_FILE = REPO_ROOT / "docs" / "design" / "DESIGN.md"
 
 
@@ -55,7 +64,7 @@ def get_state_dir(create: bool = True) -> Path:
     path_hash = hashlib.sha256(str(REPO_ROOT.resolve()).encode()).hexdigest()[:8]
     scoped_id = f"{repo_id}-{path_hash}"
 
-    external_dir = Path.home() / ".local" / "state" / "agentwork" / scoped_id
+    external_dir = oscompat.user_state_root() / scoped_id
     if not create:
         return external_dir
     try:
@@ -81,104 +90,20 @@ def state_paths(create: bool = True) -> Tuple[Path, Path, Path, Path, Path]:
 
 
 def parse_project_config() -> Dict[str, Any]:
-    """Read budget, timeout, and profile settings from project.yaml."""
-    cfg = {
-        "routing_profile": "openrouter-first",
-        "isolation_mode": "worktree-seatbelt",
-        "max_retries_per_rung": 2,
-        "max_total_attempts_per_wp": 6,
-        "global_timeout_seconds": 14400,
-        "worker_timeout_seconds": 1800,
-        "gate_timeout_seconds": 300,
-        "test_command": "",
-        "lint_command": "",
-    }
-    if not PROJECT_CONFIG.exists():
-        return cfg
-    content = PROJECT_CONFIG.read_text(encoding="utf-8")
-    for k in ("routing_profile", "isolation_mode", "test_command", "lint_command"):
-        m = re.search(rf"^\s*{k}:\s*['\"]?([^'\"\n#]+)['\"]?", content, re.MULTILINE)
-        if m:
-            cfg[k] = m.group(1).strip()
-    for k in ("max_retries_per_rung", "max_total_attempts_per_wp", "global_timeout_seconds", "worker_timeout_seconds", "gate_timeout_seconds"):
-        m = re.search(rf"^\s*{k}:\s*(\d+)", content, re.MULTILINE)
-        if m:
-            cfg[k] = int(m.group(1))
-    return cfg
+    """Read budget, timeout, and profile settings from project.yaml (flat legacy view)."""
+    return awconfig.flat_view(full_project_config())
+
+
+def full_project_config() -> Dict[str, Any]:
+    try:
+        return awconfig.load_project_config(PROJECT_CONFIG)
+    except ValueError as e:
+        print(f"CONFIG ERROR: cannot parse {PROJECT_CONFIG}: {e}", file=sys.stderr)
+        sys.exit(15)
 
 
 def get_profile() -> str:
     return str(parse_project_config()["routing_profile"])
-
-
-def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
-    """Parse YAML-like frontmatter and markdown ## Owns fallback without external dependencies."""
-    meta: Dict[str, Any] = {}
-    body = content
-    pattern = r"^---\s*\n(.*?)\n---\s*\n(.*)$"
-    match = re.match(pattern, content, re.DOTALL)
-    if match:
-        fm_text, body = match.group(1), match.group(2)
-        current_list_key = None
-        for line in fm_text.splitlines():
-            line = line.rstrip()
-            if not line or line.startswith("#"):
-                continue
-            list_item_match = re.match(r"^\s+-\s+(.*)$", line)
-            if list_item_match and current_list_key:
-                val = list_item_match.group(1).strip().strip('"').strip("'")
-                meta[current_list_key].append(val)
-                continue
-            key_val_match = re.match(r"^([A-Za-z0-9_-]+):\s*(.*)$", line)
-            if key_val_match:
-                key, val = key_val_match.group(1), key_val_match.group(2).strip()
-                if val == "":
-                    meta[key] = []
-                    current_list_key = key
-                elif val.lower() == "true":
-                    meta[key] = True
-                    current_list_key = None
-                elif val.lower() == "false":
-                    meta[key] = False
-                    current_list_key = None
-                elif val.isdigit():
-                    meta[key] = int(val)
-                    current_list_key = None
-                elif val.startswith("[") and val.endswith("]"):
-                    items = [x.strip().strip('"').strip("'") for x in val[1:-1].split(",") if x.strip()]
-                    meta[key] = items
-                    current_list_key = None
-                else:
-                    meta[key] = val.strip('"').strip("'")
-                    current_list_key = None
-
-    for list_field in ("depends", "inputs", "outputs", "owns", "locked_tests", "done_when"):
-        if list_field in meta:
-            v = meta[list_field]
-            if isinstance(v, str):
-                meta[list_field] = [v] if v else []
-            elif not isinstance(v, list):
-                meta[list_field] = [str(v)]
-
-    # Fallback: extract markdown ## Owns section if frontmatter owns is empty
-    if not meta.get("owns"):
-        md_owns: List[str] = []
-        in_owns_md = False
-        for line in body.splitlines():
-            if re.match(r"^##\s+Owns", line):
-                in_owns_md = True
-                continue
-            if in_owns_md:
-                if line.startswith("## "):
-                    in_owns_md = False
-                elif line.strip().startswith("-"):
-                    m = re.search(r"`([^`]+)`", line)
-                    if m:
-                        md_owns.append(m.group(1))
-        if md_owns:
-            meta["owns"] = md_owns
-
-    return meta, body.strip()
 
 
 def load_tasks_with_duplicates() -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
@@ -199,7 +124,7 @@ def load_tasks_with_duplicates() -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
             else:
                 task_id = str(task_id).upper()
             meta["id"] = task_id
-            rel_file = str(p.relative_to(REPO_ROOT))
+            rel_file = p.relative_to(REPO_ROOT).as_posix()
             if task_id in tasks:
                 duplicates.append(f"Duplicate task ID '{task_id}' in {rel_file} and {tasks[task_id]['file']}")
             meta["file"] = rel_file
@@ -218,9 +143,7 @@ def load_tasks() -> Dict[str, Dict[str, Any]]:
 def load_state() -> Dict[str, Any]:
     """Load current state with file locking, failing loudly on corruption."""
     _, state_file, lock_file, _, _ = state_paths(create=True)
-    lock_file.touch(exist_ok=True)
-    with open(lock_file, "r+", encoding="utf-8") as lf:
-        fcntl.flock(lf, fcntl.LOCK_SH)
+    with FileLock(lock_file, exclusive=False):
         try:
             if not state_file.exists():
                 return {
@@ -242,34 +165,35 @@ def load_state() -> Dict[str, Any]:
         except Exception as e:
             print(f"CRITICAL STATE ERROR: Failed to parse {state_file}: {e}", file=sys.stderr)
             sys.exit(13)
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
 
 
 def save_state(state: Dict[str, Any]) -> None:
     """Atomically save authoritative state under exclusive flock and write read-only mirror."""
     sdir, state_file, lock_file, _, _ = state_paths(create=True)
-    lock_file.touch(exist_ok=True)
-    with open(lock_file, "r+", encoding="utf-8") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
-            state["heartbeat_at"] = time.time()
-            payload = json.dumps(state, indent=2)
-            fd, tmp_path = tempfile.mkstemp(dir=str(sdir), prefix="STATE.", suffix=".tmp")
-            with os.fdopen(fd, "w", encoding="utf-8") as tf:
-                tf.write(payload)
-                tf.flush()
-                os.fsync(tf.fileno())
-            os.replace(tmp_path, state_file)
-
-            mirror = REPO_ROOT / "agentwork" / "state" / "STATUS_MIRROR.json"
+    with FileLock(lock_file, exclusive=True):
+        state["heartbeat_at"] = time.time()
+        payload = json.dumps(state, indent=2)
+        fd, tmp_path = tempfile.mkstemp(dir=str(sdir), prefix="STATE.", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as tf:
+            tf.write(payload)
+            tf.flush()
+            os.fsync(tf.fileno())
+        for attempt in range(50):
             try:
-                mirror.parent.mkdir(parents=True, exist_ok=True)
-                mirror.write_text(payload, encoding="utf-8")
-            except Exception:
-                pass
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+                os.replace(tmp_path, state_file)
+                break
+            except PermissionError:
+                # Windows: a reader (or antivirus) may briefly hold the file open.
+                if attempt == 49:
+                    raise
+                time.sleep(0.1)
+
+        mirror = REPO_ROOT / "agentwork" / "state" / "STATUS_MIRROR.json"
+        try:
+            mirror.parent.mkdir(parents=True, exist_ok=True)
+            mirror.write_text(payload, encoding="utf-8")
+        except Exception:
+            pass
 
 
 def journal_event(event_type: str, data: Dict[str, Any]) -> None:
@@ -440,14 +364,39 @@ def validate_tasks_internal() -> List[str]:
     return errors
 
 
+def _stable_hash(path: Path) -> str:
+    return hashlib.sha256(stable_file_bytes(path)).hexdigest() if path.exists() else ""
+
+
+def gate_source_files() -> List[Path]:
+    """Every file whose content defines the gate's behaviour (sealed as gate_hash)."""
+    files: List[Path] = [PIPELINE]
+    if AWLIB_DIR.is_dir():
+        files += sorted(AWLIB_DIR.glob("*.py"))
+    tool = TOOLS_DIR / "rust-testcheck"
+    for rel in ("Cargo.toml", "Cargo.lock", "src/main.rs"):
+        if (tool / rel).exists():
+            files.append(tool / rel)
+    return files
+
+
+def compute_gate_hash() -> str:
+    h = hashlib.sha256()
+    for f in gate_source_files():
+        h.update(f.relative_to(REPO_ROOT).as_posix().encode())
+        h.update(stable_file_bytes(f))
+    return h.hexdigest()
+
+
 def compute_current_manifest(tasks: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     """Compute manifest hashes over design, config, scripts, specs, and .files/."""
     profile = get_profile()
-    design_hash = hashlib.sha256(DESIGN_FILE.read_bytes()).hexdigest() if DESIGN_FILE.exists() else ""
-    policy_hash = hashlib.sha256(PROJECT_CONFIG.read_bytes()).hexdigest() if PROJECT_CONFIG.exists() else ""
-    agents_hash = hashlib.sha256(AGENTS_CONFIG.read_bytes()).hexdigest() if AGENTS_CONFIG.exists() else ""
-    gate_script = SCRIPTS_DIR / "verify_gate.sh"
-    gate_hash = hashlib.sha256(gate_script.read_bytes()).hexdigest() if gate_script.exists() else ""
+    # Text files are hashed with CRLF normalized to LF so a seal made on Linux
+    # verifies on a Windows checkout (core.autocrlf) and vice versa.
+    design_hash = _stable_hash(DESIGN_FILE)
+    policy_hash = _stable_hash(PROJECT_CONFIG)
+    agents_hash = _stable_hash(AGENTS_CONFIG)
+    gate_hash = compute_gate_hash()
 
     manifest: Dict[str, Any] = {
         "version": "2.0",
@@ -471,15 +420,15 @@ def compute_current_manifest(tasks: Dict[str, Dict[str, Any]]) -> Dict[str, Any]
         stack.add(tid)
         t = tasks[tid]
         spec_path = REPO_ROOT / t["file"]
-        spec_hash = hashlib.sha256(spec_path.read_bytes()).hexdigest() if spec_path.exists() else ""
+        spec_hash = _stable_hash(spec_path)
 
         seed_dir = spec_path.with_suffix(".files")
         seed_hash_er = hashlib.sha256()
         if seed_dir.exists() and seed_dir.is_dir():
             for sf in sorted(seed_dir.rglob("*")):
                 if sf.is_file():
-                    seed_hash_er.update(str(sf.relative_to(seed_dir)).encode())
-                    seed_hash_er.update(sf.read_bytes())
+                    seed_hash_er.update(sf.relative_to(seed_dir).as_posix().encode())
+                    seed_hash_er.update(stable_file_bytes(sf))
         seed_hash = seed_hash_er.hexdigest()
 
         h = hashlib.sha256()
@@ -544,25 +493,13 @@ def verify_seal_or_exit(tasks: Dict[str, Dict[str, Any]], require_manifest: bool
 
 
 def run_process_with_group_timeout(cmd: List[str], cwd: Path, timeout_sec: int) -> int:
-    """Run subprocess in its own process group and kill the entire group on timeout or interrupt."""
-    proc = subprocess.Popen(cmd, cwd=cwd, start_new_session=True)
-    try:
-        return proc.wait(timeout=timeout_sec)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-            time.sleep(0.5)
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            pass
-        proc.wait()
-        raise
-    except KeyboardInterrupt:
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except OSError:
-            pass
-        raise
+    """Run cmd and kill its whole process tree on timeout or Ctrl-C (POSIX + Windows)."""
+    return oscompat.run_process_with_group_timeout(cmd, cwd=cwd, timeout_sec=timeout_sec)
+
+
+def self_cmd(*args: str) -> List[str]:
+    """argv that re-invokes this pipeline with the current interpreter."""
+    return [sys.executable, str(PIPELINE), *args]
 
 
 def cmd_doctor(args):
@@ -576,15 +513,42 @@ def cmd_doctor(args):
     errors = []
     if profile == "<REQUIRED>" or profile not in ("openrouter-first", "sensitive", "balanced", "local-only"):
         errors.append(f"Invalid or unset routing_profile '{profile}' in project.yaml.")
-    if isolation not in ("worktree-seatbelt", "worktree-only"):
+    if isolation not in awconfig.VALID_ISOLATION:
         errors.append(f"Invalid isolation_mode '{isolation}' in project.yaml.")
 
-    for bin_name in ["git", "python3", "bash"]:
-        res = subprocess.run(["which", bin_name], capture_output=True, text=True)
-        if res.returncode == 0:
-            print(f"  ✓ {bin_name} found: {res.stdout.strip()}")
-        else:
-            errors.append(f"Missing core binary: {bin_name}")
+    print(f"  ✓ python found: {sys.executable} ({sys.version.split()[0]})")
+    if shutil.which("git"):
+        print(f"  ✓ git found: {shutil.which('git')}")
+    else:
+        errors.append("Missing core binary: git")
+    full = full_project_config()
+    try:
+        langs = awconfig.enabled_languages(full, REPO_ROOT)
+    except ValueError as e:
+        errors.append(str(e))
+        langs = []
+    print(f"  ✓ languages: {', '.join(langs) or 'none'}")
+    if "rust" in langs:
+        for b in ("cargo", "rustfmt"):
+            if shutil.which(b):
+                print(f"  ✓ {b} found: {shutil.which(b)}")
+            else:
+                errors.append(f"Rust enabled but '{b}' not found in PATH")
+        if shutil.which("cargo"):
+            clippy = subprocess.run(["cargo", "clippy", "--version"], capture_output=True, text=True)
+            if clippy.returncode != 0:
+                errors.append("Rust enabled but 'cargo clippy' is not installed (rustup component add clippy)")
+            from awlib import langs as awlangs
+            print(f"  ✓ rust test command: {awlangs.rust_test_command(full)}")
+            if (full["rust"].get("mutants") or {}).get("enabled"):
+                mut = subprocess.run(["cargo", "mutants", "--version"], capture_output=True, text=True)
+                if mut.returncode != 0:
+                    errors.append("rust.mutants.enabled is true but cargo-mutants is not installed (cargo install cargo-mutants)")
+    shell_pref = str(full["verification"].get("shell") or "auto")
+    try:
+        print(f"  ✓ verification shell: {' '.join(oscompat.resolve_shell(shell_pref))}")
+    except (FileNotFoundError, ValueError) as e:
+        errors.append(str(e))
 
     # Check available agent CLIs
     installed_clis = [c for c in ("claude", "claude-or", "claude-local", "codex", "agy", "gemini", "pi-code") if is_agent_installed(c)]
@@ -596,15 +560,15 @@ def cmd_doctor(args):
 
     if profile in ("sensitive", "local-only"):
         print(f"  ✓ Profile '{profile}' active: verifying claude-or is rejected...")
-        res = subprocess.run(["bash", str(SCRIPTS_DIR / "launch.sh"), "DUMMY", "claude-or"], capture_output=True, text=True)
+        res = subprocess.run(self_cmd("launch", "DUMMY", "claude-or"), capture_output=True, text=True)
         if res.returncode == 2:
             print("  ✓ Local rejection test passed: claude-or blocked before execution.")
         else:
             errors.append("Profile guard failed: claude-or was not blocked with exit code 2.")
 
-    res = subprocess.run(["bash", str(SCRIPTS_DIR / "launch.sh"), "--selftest"], capture_output=True, text=True)
+    res = subprocess.run(self_cmd("launch", "--selftest"), capture_output=True, text=True)
     if res.returncode == 0:
-        print("  ✓ Sandbox selftest passed.")
+        print("  ✓ Sandbox selftest passed." + ("  (DEGRADED: no OS sandbox, worktree-only)" if "DEGRADED" in res.stdout else ""))
     else:
         errors.append(f"Sandbox selftest failed for isolation_mode '{isolation}'.")
 
@@ -704,7 +668,7 @@ def cmd_next(args):
 
     nxt = ready[0]
     tid = nxt["id"]
-    argv = [sys.executable, str(Path(__file__).resolve()), "run", tid]
+    argv = self_cmd("run", tid)
 
     if args.json:
         print(json.dumps({
@@ -762,12 +726,40 @@ def extract_file_symbols(file_path: Path) -> Tuple[List[str], List[str]]:
                         signatures.append(cls_sig)
         except Exception:
             pass
-    elif file_path.suffix in (".ts", ".tsx", ".js", ".rs", ".go", ".c", ".h"):
+    elif file_path.suffix == ".rs":
+        signatures = rustsrc.extract_signatures(text)
+        mods, uses = rustsrc.extract_module_refs(text)
+        imports = [f"rust-mod:{m}" for m in mods] + [f"rust-use:{u}" for u in uses]
+    elif file_path.suffix in (".ts", ".tsx", ".js", ".go", ".c", ".h"):
         for line in text.splitlines():
             line_s = line.strip()
             if re.match(r"^(export\s+|pub\s+|func\s+|type\s+|interface\s+|struct\s+|class\s+|def\s+)", line_s):
                 signatures.append(line_s.rstrip("{;").strip())
     return signatures, imports
+
+
+def rust_module_candidates(src_file: Path, ref: str) -> List[Path]:
+    """Resolve `mod foo;` (sibling file) or `use crate::a::b` (from the crate's src/) to files."""
+    kind, _, name = ref.partition(":")
+    out: List[Path] = []
+    if kind == "rust-mod":
+        base = src_file.parent if src_file.name in ("lib.rs", "main.rs", "mod.rs") else src_file.parent / src_file.stem
+        for c in (base / f"{name}.rs", base / name / "mod.rs"):
+            if c.is_file():
+                out.append(c)
+                break
+        return out
+    crate_dir = src_file.parent
+    while crate_dir != crate_dir.parent and not (crate_dir / "Cargo.toml").exists():
+        crate_dir = crate_dir.parent
+    src_root = crate_dir / "src"
+    parts = [p for p in name.replace("{", " ").split("::") if p and p.isidentifier()]
+    for n in range(len(parts), 0, -1):
+        rel = Path(*parts[:n])
+        for c in (src_root / rel.with_suffix(".rs"), src_root / rel / "mod.rs"):
+            if c.is_file():
+                return [c]
+    return out
 
 
 def build_symbol_context(tid: str, tasks: Dict[str, Dict[str, Any]]) -> Dict[str, List[str]]:
@@ -798,17 +790,26 @@ def build_symbol_context(tid: str, tasks: Dict[str, Dict[str, Any]]) -> Dict[str
     symbol_map: Dict[str, List[str]] = {}
     hop1_modules: Set[str] = set()
     for f in sorted(resolved_files):
-        rel = str(f.relative_to(REPO_ROOT))
+        rel = f.relative_to(REPO_ROOT).as_posix()
         sigs, imps = extract_file_symbols(f)
         if sigs:
             symbol_map[rel] = sigs
-        hop1_modules.update(imps)
+        for imp in imps:
+            if imp.startswith(("rust-mod:", "rust-use:")):
+                for cand in rust_module_candidates(f, imp):
+                    crel = cand.relative_to(REPO_ROOT).as_posix()
+                    if crel not in symbol_map and cand not in resolved_files:
+                        csigs, _ = extract_file_symbols(cand)
+                        if csigs:
+                            symbol_map[f"{crel} (1-hop import)"] = csigs
+            else:
+                hop1_modules.add(imp)
 
     for mod in sorted(hop1_modules):
         mod_rel = mod.replace(".", "/") + ".py"
         for candidate in (REPO_ROOT / mod_rel, REPO_ROOT / "src" / mod_rel):
             if candidate.exists() and candidate.is_file():
-                rel = str(candidate.relative_to(REPO_ROOT))
+                rel = candidate.relative_to(REPO_ROOT).as_posix()
                 if rel not in symbol_map:
                     sigs, _ = extract_file_symbols(candidate)
                     if sigs:
@@ -833,7 +834,8 @@ def cmd_context(args):
             return
         lines = []
         for f_rel, sigs in sym_map.items():
-            lines.append(f"## {f_rel}\n```python\n" + "\n".join(sigs) + "\n```")
+            lang = "rust" if f_rel.split(" ")[0].endswith(".rs") else "python"
+            lines.append(f"## {f_rel}\n```{lang}\n" + "\n".join(sigs) + "\n```")
         print("\n\n".join(lines))
         return
 
@@ -1082,8 +1084,7 @@ def cmd_run(args):
     save_state(state)
     journal_event("claim", {"task_id": tid, "agent": agent, "rung": rung})
 
-    launch_script = SCRIPTS_DIR / "launch.sh"
-    cmd = ["bash", str(launch_script), tid, agent]
+    cmd = self_cmd("launch", tid, agent)
     if args.retry_note_file:
         cmd.extend(["--retry-note-file", args.retry_note_file])
 
@@ -1121,12 +1122,11 @@ def cmd_check(args):
     """Verify task gate."""
     tid = args.id.upper()
     cfg = parse_project_config()
-    verify_script = SCRIPTS_DIR / "verify_gate.sh"
     wt_dir = get_trees_dir() / tid
     target = wt_dir if wt_dir.exists() else REPO_ROOT
 
     try:
-        rc = run_process_with_group_timeout(["bash", str(verify_script), tid, str(target)], cwd=REPO_ROOT, timeout_sec=cfg["gate_timeout_seconds"])
+        rc = run_process_with_group_timeout(self_cmd("gate", tid, str(target)), cwd=REPO_ROOT, timeout_sec=cfg["gate_timeout_seconds"])
         sys.exit(rc)
     except subprocess.TimeoutExpired:
         print(f"GATE TIMEOUT: Gate check for {tid} exceeded {cfg['gate_timeout_seconds']}s.", file=sys.stderr)
@@ -1187,7 +1187,7 @@ def cmd_merge(args):
     # 3. Pre-merge gate check on candidate worktree if present
     if wt_dir.exists():
         try:
-            pre_rc = run_process_with_group_timeout(["bash", str(SCRIPTS_DIR / "verify_gate.sh"), tid, str(wt_dir), effective_gate_base], cwd=REPO_ROOT, timeout_sec=gate_timeout)
+            pre_rc = run_process_with_group_timeout(self_cmd("gate", tid, str(wt_dir), effective_gate_base), cwd=REPO_ROOT, timeout_sec=gate_timeout)
         except subprocess.TimeoutExpired:
             pre_rc = 9
         if pre_rc != 0:
@@ -1204,7 +1204,7 @@ def cmd_merge(args):
 
     # 5. Post-merge verification gate passing explicit effective_gate_base
     try:
-        post_rc = run_process_with_group_timeout(["bash", str(SCRIPTS_DIR / "verify_gate.sh"), tid, str(REPO_ROOT), effective_gate_base], cwd=REPO_ROOT, timeout_sec=gate_timeout)
+        post_rc = run_process_with_group_timeout(self_cmd("gate", tid, str(REPO_ROOT), effective_gate_base), cwd=REPO_ROOT, timeout_sec=gate_timeout)
     except subprocess.TimeoutExpired:
         post_rc = 9
     if post_rc != 0:
@@ -1245,11 +1245,10 @@ def cmd_drive(args):
     """Autonomous execution engine with process-level lock, budgets, timeouts, and seal verification."""
     sdir, _, _, drive_lock, _ = state_paths(create=True)
     attempts_dir = sdir / "attempts"
-    drive_lock.touch(exist_ok=True)
-    lock_fh = open(drive_lock, "r+", encoding="utf-8")
+    drive_lock_obj = FileLock(drive_lock, exclusive=True, blocking=False)
     try:
-        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+        drive_lock_obj.acquire()
+    except LockBusy:
         print("ERROR: Another 'pipeline.py drive' instance is already running for this repository.", file=sys.stderr)
         sys.exit(13)
 
@@ -1288,7 +1287,7 @@ def cmd_drive(args):
         if all(s == "DONE" for s in statuses.values()):
             print("\n=== ALL WORKPACKAGES COMPLETE: Running final acceptance gate ===")
             try:
-                final_rc = run_process_with_group_timeout(["bash", str(SCRIPTS_DIR / "verify_gate.sh"), "FINAL", str(REPO_ROOT)], cwd=REPO_ROOT, timeout_sec=gate_timeout)
+                final_rc = run_process_with_group_timeout(self_cmd("gate", "FINAL", str(REPO_ROOT)), cwd=REPO_ROOT, timeout_sec=gate_timeout)
             except subprocess.TimeoutExpired:
                 final_rc = 9
             if final_rc == 0:
@@ -1330,7 +1329,7 @@ def cmd_drive(args):
             chosen_agent = candidates[within_rung_idx % len(candidates)]
 
         print(f"\n--- Autopilot driving {tid} (Attempt {attempt_idx + 1}/{max_attempts}, Rung {cur_rung}, Agent {chosen_agent}) ---")
-        run_cmd = [sys.executable, str(Path(__file__).resolve()), "run", tid, "--rung", str(cur_rung), "--agent", chosen_agent]
+        run_cmd = self_cmd("run", tid, "--rung", str(cur_rung), "--agent", chosen_agent)
 
         retry_note = attempts_dir / f"{tid}-retry.md"
         if task_attempts and retry_note.exists():
@@ -1353,7 +1352,7 @@ def cmd_drive(args):
             continue
 
         if run_res.returncode == 0:
-            merge_res = subprocess.run([sys.executable, str(Path(__file__).resolve()), "merge", tid], cwd=REPO_ROOT)
+            merge_res = subprocess.run(self_cmd("merge", tid), cwd=REPO_ROOT)
             if merge_res.returncode != 0:
                 print(f"Promotion failed for {tid}; marking {tid} BLOCKED and continuing independent tasks.", file=sys.stderr)
                 state = load_state()
@@ -1400,8 +1399,29 @@ def cmd_status(args):
                 print(f"  - {k}: {v.get('question')}")
 
 
+PASSTHROUGH = {
+    # subcommand: (module, function) — these parse their own arguments
+    "gate": ("awlib.gate", "cli_main"),
+    "launch": ("awlib.launch", "cli_main"),
+    "split": ("awlib.split", "cli_main"),
+    "driver": ("awlib.driver", "cli_main"),
+    "setup": ("awlib.setup_cmd", "setup_main"),
+    "update-all": ("awlib.setup_cmd", "update_all_main"),
+    "rust-check": ("awlib.rust_checks", "cli_main"),
+}
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Deterministic Multi-Agent Pipeline Driver")
+    if len(sys.argv) > 1 and sys.argv[1] in PASSTHROUGH:
+        import importlib
+
+        mod_name, fn_name = PASSTHROUGH[sys.argv[1]]
+        fn = getattr(importlib.import_module(mod_name), fn_name)
+        sys.exit(fn(sys.argv[2:]))
+
+    parser = argparse.ArgumentParser(
+        description="Deterministic Multi-Agent Pipeline Driver",
+        epilog="Also: gate | launch | split | driver | setup | update-all | rust-check (each has its own --help).")
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("doctor", help="Run diagnostics")

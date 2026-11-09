@@ -1,0 +1,19 @@
+[package]
+name = "agentwork-rust-testcheck"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "agentwork gate helper: parses Rust files with syn and reports test anti-patterns"
+license = "MIT"
+
+[dependencies]
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing", "visit", "clone-impls"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+
+# Standalone: never become a member of the project's own workspace.
+[workspace]
+
+[profile.release]
+opt-level = 2
+debug = false

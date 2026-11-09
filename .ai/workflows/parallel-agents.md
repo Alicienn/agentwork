@@ -66,6 +66,7 @@ agentwork/scripts/launch.sh WP01 codex        &
 agentwork/scripts/launch.sh WP02 gemini       &
 agentwork/scripts/launch.sh WP03 claude       &
 agentwork/scripts/launch.sh WP04 pi-code      &   # local, no API credits
+# Windows (cmd): start /b agentwork\scripts\launch.cmd WP01 codex   (one per package)
 wait
 ```
 
@@ -118,6 +119,7 @@ crowd the window of a small one.
 ```sh
 agentwork/scripts/split.sh WP09 claude --target pi-code   # --dry-run to preview
 agentwork/scripts/split.sh WP09 claude --target hosted
+# Windows: agentwork\scripts\split.cmd WP09 claude --target hosted
 ```
 
 **Establish `--target` first** (see Phase 1), reusing an explicit session choice.
